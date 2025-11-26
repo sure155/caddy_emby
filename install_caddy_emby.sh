@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ====================================================
-#  Caddy Reverse Proxy for Emby - Pro Ver (Fixed)
+#  Caddy Reverse Proxy for Emby - V4 (Loop Menu)
 #  Author: AiLi1337
 # ====================================================
 
@@ -19,22 +19,70 @@ log() { echo -e "${GREEN}[Info]${PLAIN} $1"; }
 warn() { echo -e "${YELLOW}[Warning]${PLAIN} $1"; }
 error() { echo -e "${RED}[Error]${PLAIN} $1"; }
 
-# 1. 安装基础环境
+# 1. 安装基础环境 (确保有 netstat/ss)
 install_base() {
-    log "正在更新系统..."
+    log "正在检查并安装基础组件..."
     if [ -f /etc/debian_version ]; then
-        apt update -y && apt install -y curl wget sudo socat
+        apt update -y && apt install -y curl wget sudo socat net-tools psmisc
     elif [ -f /etc/redhat-release ]; then
-        yum install -y curl wget sudo socat
+        yum install -y curl wget sudo socat net-tools psmisc
     fi
 }
 
-# 2. 安装 Caddy
+# 2. 端口占用查询
+check_port() {
+    echo -e "------------------------------------------------"
+    echo -e "${SKYBLUE}正在查询 80 和 443 端口占用情况...${PLAIN}"
+    echo -e "------------------------------------------------"
+    
+    # 优先使用 netstat，如果不存在则使用 ss
+    if command -v netstat &> /dev/null; then
+        netstat -tunlp | grep -E ":80|:443"
+    else
+        ss -tulpn | grep -E ":80|:443"
+    fi
+
+    echo -e "------------------------------------------------"
+    echo -e "如果有内容显示，说明端口被占用。"
+    echo -e "如果是 nginx/apache，请使用菜单 [7] 清理。"
+    echo -e "如果是 caddy，说明服务正在运行，属正常现象。"
+}
+
+# 3. 强制清理端口
+kill_port() {
+    echo -e "${RED}正在强制停止常见 Web 服务并清理端口...${PLAIN}"
+    
+    systemctl stop nginx 2>/dev/null
+    systemctl disable nginx 2>/dev/null
+    log "已停止 Nginx"
+
+    systemctl stop apache2 2>/dev/null
+    systemctl disable apache2 2>/dev/null
+    systemctl stop httpd 2>/dev/null
+    log "已停止 Apache"
+
+    # 杀掉占用 80 和 443 的所有进程
+    if command -v fuser &> /dev/null; then
+        fuser -k 80/tcp 2>/dev/null
+        fuser -k 443/tcp 2>/dev/null
+    else
+        # 备用方案
+        killall -9 caddy 2>/dev/null
+        killall -9 nginx 2>/dev/null
+        killall -9 httpd 2>/dev/null
+    fi
+    
+    log "清理完成！现在端口应该是干净的。"
+    sleep 1
+}
+
+# 4. 安装 Caddy
 install_caddy() {
     if command -v caddy &> /dev/null; then
-        warn "Caddy 已安装，跳过安装步骤。"
+        warn "Caddy 已安装。"
     else
         log "正在安装 Caddy..."
+        install_base # 确保基础组件已安装
         if [ -f /etc/debian_version ]; then
             apt install -y debian-keyring debian-archive-keyring apt-transport-https
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -51,62 +99,55 @@ install_caddy() {
     fi
 }
 
-# 3. 配置向导
+# 5. 配置向导
 configure_caddy() {
     echo -e "------------------------------------------------"
     echo -e "${SKYBLUE}Caddy 反代 Emby 配置向导${PLAIN}"
     echo -e "------------------------------------------------"
 
-    # 1. 获取域名
     read -p "请输入你的新域名 (例如 emby.my.com): " DOMAIN < /dev/tty
     if [[ -z "$DOMAIN" ]]; then
-        error "域名不能为空！"
+        error "域名不能为空"
         return
     fi
 
-    # 2. 获取后端地址 (不再强制默认值，提示支持 https)
-    read -p "请输入 Emby 后端地址 (例如 https://source.emby.com:443 或 127.0.0.1:8096): " EMBY_ADDRESS < /dev/tty
+    read -p "请输入 Emby 后端地址 (如 https://source.com:443 或 127.0.0.1:8096): " EMBY_ADDRESS < /dev/tty
     if [[ -z "$EMBY_ADDRESS" ]]; then
         EMBY_ADDRESS="127.0.0.1:8096"
-        warn "未输入地址，已使用默认本地地址: $EMBY_ADDRESS"
+        warn "使用默认地址: $EMBY_ADDRESS"
     fi
 
     # 备份旧配置
     if [ -f /etc/caddy/Caddyfile ]; then
         cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak.$(date +%F_%H%M%S)
-        log "已备份原配置。"
     fi
 
     log "正在生成配置文件..."
 
-    # 生成 Caddyfile
-    # 注意：这里去掉了 email 指令，防止报错
+    # 写入配置 (包含 Host 透传，解决 HTTPS 反代 404 问题)
     cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
     encode gzip
-    
-    # 允许跨域
     header Access-Control-Allow-Origin *
 
-    # 反向代理配置
     reverse_proxy $EMBY_ADDRESS {
-        # 传递真实 IP 和协议
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
         
-        # 如果后端是 HTTPS 且域名不一致，可能需要开启 host 覆盖，
-        # 但通常反代 Emby 保持 host 透传即可。如果遇到 404/403，
-        # 可以尝试取消下面这行的注释:
-        # header_up Host {upstream_hostport}
+        # 强制将 Host 头修改为上游地址 (关键修改)
+        header_up Host {upstream_hostport}
     }
 }
 EOF
 
     log "配置已写入，正在重启 Caddy..."
+    
+    # 重启前尝试清理下自身进程，防止卡死
+    killall -9 caddy 2>/dev/null
     systemctl restart caddy
     
-    sleep 2
+    sleep 3
     if systemctl is-active --quiet caddy; then
         echo -e "\n${GREEN}=========================================="
         echo -e " 恭喜！反代配置成功！"
@@ -114,35 +155,46 @@ EOF
         echo -e "==========================================${PLAIN}"
     else
         error "Caddy 启动失败！"
-        echo "请使用 'systemctl status caddy -l' 查看详细错误。"
+        echo "请尝试在菜单中选择 [7] 清理端口占用，然后重试 [4] 重启服务。"
+        echo "日志: systemctl status caddy -l"
     fi
 }
 
-# 4. 菜单
-menu() {
+# 6. 菜单循环
+show_menu() {
     clear
     echo -e "#################################################"
-    echo -e "#    Caddy + Emby 一键反代脚本 (Fixed Ver)      #"
+    echo -e "#    Caddy + Emby 一键反代脚本 (V4 Loop)        #"
     echo -e "#################################################"
-    echo -e ""
-    echo -e " ${GREEN}1.${PLAIN} 安装并配置 Caddy"
-    echo -e " ${GREEN}2.${PLAIN} 修改配置 (重置域名/后端)"
-    echo -e " ${GREEN}3.${PLAIN} 停止服务"
-    echo -e " ${GREEN}4.${PLAIN} 重启服务"
+    echo -e " ${GREEN}1.${PLAIN} 安装环境 & Caddy"
+    echo -e " ${GREEN}2.${PLAIN} 配置反代 (输入域名/IP)"
+    echo -e " ${GREEN}3.${PLAIN} 停止 Caddy"
+    echo -e " ${GREEN}4.${PLAIN} 重启 Caddy"
     echo -e " ${GREEN}5.${PLAIN} 卸载 Caddy"
-    echo -e " ${GREEN}0.${PLAIN} 退出"
+    echo -e "-------------------------------------------------"
+    echo -e " ${YELLOW}6.${PLAIN} 查询 443/80 端口占用"
+    echo -e " ${RED}7.${PLAIN} 暴力处理端口占用 (修复启动失败)"
+    echo -e "-------------------------------------------------"
+    echo -e " ${GREEN}0.${PLAIN} 退出脚本"
     echo -e ""
-    read -p " 请输入数字: " num < /dev/tty
+    read -p " 请输入数字 [0-7]: " num < /dev/tty
 
-    case "$num" in
-        1) install_base; install_caddy; configure_caddy ;;
-        2) configure_caddy ;;
+    case "$num" 在
+        1) install_base; install_caddy ;;
+        2) install_base; configure_caddy ;;
         3) systemctl stop caddy; log "服务已停止" ;;
         4) systemctl restart caddy; log "服务已重启" ;;
-        5) apt remove caddy -y 2>/dev/null || yum remove caddy -y 2>/dev/null; rm -rf /etc/caddy; log "已卸载" ;;
+        5) apt remove caddy -y 2>/dev/null; yum remove caddy -y 2>/dev/null; rm -rf /etc/caddy; log "已卸载" ;;
+        6) install_base; check_port ;;
+        7) install_base; kill_port ;;
         0) exit 0 ;;
-        *) error "输入错误" ;;
+        *) error "请输入正确的数字" ;;
     esac
 }
 
-menu
+# 主循环
+while true; do
+    show_menu
+    echo -e "\n${GREEN}按回车键返回主菜单...${PLAIN}"
+    read temp < /dev/tty
+done
