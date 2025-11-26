@@ -20,4 +20,4 @@
 使用 root 用户在终端运行以下命令：
 
 ```bash
-bash <(curl -sL [https://raw.githubusercontent.com/AiLi1337/install_caddy_emby/main/install_caddy_emby.sh](https://raw.githubusercontent.com/AiLi1337/install_caddy_emby/main/install_caddy_emby.sh))
+bash <(curl -sL https://raw.githubusercontent.com/AiLi1337/install_caddy_emby/main/install_caddy_emby.sh)
