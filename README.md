@@ -12,7 +12,7 @@
 **使用 Root 用户**在终端运行以下命令即可：
 
 ```bash
-bash <(curl -sL [https://raw.githubusercontent.com/AiLi1337/install_caddy_emby/main/install_caddy_emby.sh](https://raw.githubusercontent.com/AiLi1337/install_caddy_emby/main/install_caddy_emby.sh))
+bash <(curl -sL https://raw.githubusercontent.com/AiLi1337/install_caddy_emby/main/install_caddy_emby.sh)
 ```
 ## ✨ 核心功能 (V4 更新)
 
