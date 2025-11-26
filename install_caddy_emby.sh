@@ -102,13 +102,13 @@ configure_caddy() {
     echo -e "${SKYBLUE}Caddy 反代 Emby 配置向导${PLAIN}"
     echo -e "------------------------------------------------"
 
-    read -p "请输入你的新域名 (例如 emby.my.com): " DOMAIN < /dev/tty
+    read -p "请输入你的反代域名 (例如 emby.my.com): " DOMAIN < /dev/tty
     if [[ -z "$DOMAIN" ]]; then
         error "域名不能为空"
         return
     fi
 
-    read -p "请输入 Emby 后端地址 (如 https://source.com:443 或 127.0.0.1:8096): " EMBY_ADDRESS < /dev/tty
+    read -p "请输入 Emby 后端地址 (如 https://source.com:443,默认使用127.0.0.1:8096): " EMBY_ADDRESS < /dev/tty
     if [[ -z "$EMBY_ADDRESS" ]]; then
         EMBY_ADDRESS="127.0.0.1:8096"
         warn "使用默认地址: $EMBY_ADDRESS"
@@ -171,7 +171,6 @@ show_menu() {
     echo -e ""
     read -p " 请输入数字 [0-7]: " num < /dev/tty
 
-    # 这里的 in 千万不要改成中文的 在
     case "$num" in
         1) install_base; install_caddy ;;
         2) install_base; configure_caddy ;;
