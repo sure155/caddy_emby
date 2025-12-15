@@ -2,7 +2,7 @@
 
 # ====================================================
 #  Caddy Reverse Proxy for Emby - V5 (Multi-Site Manager)
-#  Author: AiLi1337
+#  Author: AiLi1337 + 优化
 # ====================================================
 
 # 颜色定义
@@ -22,7 +22,6 @@ error() { echo -e "${RED}[Error]${PLAIN} $1"; }
 # 1. 安装基础环境
 install_base() {
     log "正在检查并安装基础组件..."
-    # 增加 grep, sed, awk 确保文本处理正常
     if [ -f /etc/debian_version ]; then
         apt update -y && apt install -y curl wget sudo socat net-tools psmisc sed grep
     elif [ -f /etc/redhat-release ]; then
@@ -89,90 +88,94 @@ install_caddy() {
     fi
 }
 
-# 5. 配置向导 (核心升级：支持追加)
+# 5. 配置向导 (优化支持视频流)
 configure_caddy() {
     echo -e "------------------------------------------------"
     echo -e "${SKYBLUE}Caddy 反代配置 (支持多站点)${PLAIN}"
     echo -e "------------------------------------------------"
 
-    # 检查是否存在旧配置
+    # 检查旧配置
     MODE="new"
     if [ -f /etc/caddy/Caddyfile ] && [ -s /etc/caddy/Caddyfile ]; then
         echo -e "检测到已有配置文件。"
-        echo -e " ${GREEN}1.${PLAIN} 覆盖 (清空旧配置，仅保留这一个)"
+        echo -e " ${GREEN}1.${PLAIN} 覆盖 (清空旧配置，仅保留新添加)"
         echo -e " ${GREEN}2.${PLAIN} 追加 (保留旧配置，添加新域名)"
         read -p "请选择模式 [1-2]: " config_mode < /dev/tty
-        if [[ "$config_mode" == "2" ]]; then
-            MODE="append"
-        fi
+        [[ "$config_mode" == "2" ]] && MODE="append"
     fi
 
-    read -p "请输入新域名 (例如 emby2.my.com): " DOMAIN < /dev/tty
-    if [[ -z "$DOMAIN" ]]; then error "域名不能为空"; return; fi
+    while true; do
+        read -p "请输入新域名 (例如 emby2.my.com, 回车结束): " DOMAIN < /dev/tty
+        [[ -z "$DOMAIN" ]] && break
 
-    read -p "请输入后端地址 (如 https://remote.com:443 或 127.0.0.1:8096): " EMBY_ADDRESS < /dev/tty
-    [[ -z "$EMBY_ADDRESS" ]] && EMBY_ADDRESS="127.0.0.1:8096"
+        read -p "请输入后端地址 (如 https://remote.com:443 或 127.0.0.1:8096): " EMBY_ADDRESS < /dev/tty
+        [[ -z "$EMBY_ADDRESS" ]] && EMBY_ADDRESS="127.0.0.1:8096"
 
-    # 备份
-    cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak.$(date +%F_%H%M%S) 2>/dev/null
+        cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak.$(date +%F_%H%M%S) 2>/dev/null
 
-    # 如果是追加模式，先检查域名是否已存在，防止重复报错
-    if [[ "$MODE" == "append" ]]; then
-        if grep -q "$DOMAIN {" /etc/caddy/Caddyfile; then
-            warn "域名 $DOMAIN 已存在！正在删除旧配置块，写入新配置..."
-            # 使用 sed 删除该域名对应的块 (假设格式标准：域名 { ... })
-            sed -i "/^$DOMAIN {/,/^}/d" /etc/caddy/Caddyfile
-            # 删除多余空行
-            sed -i '/^\s*$/d' /etc/caddy/Caddyfile
+        if [[ "$MODE" == "append" ]]; then
+            if grep -q "$DOMAIN {" /etc/caddy/Caddyfile; then
+                warn "域名 $DOMAIN 已存在，删除旧配置..."
+                sed -i "/^$DOMAIN {/,/^}/d" /etc/caddy/Caddyfile
+                sed -i '/^\s*$/d' /etc/caddy/Caddyfile
+            fi
         fi
-    fi
 
-    # 生成配置块内容
-    CONFIG_BLOCK="$DOMAIN {
+        if [[ "$EMBY_ADDRESS" =~ ^https:// ]]; then
+            CONFIG_BLOCK="$DOMAIN {
     encode gzip
     header Access-Control-Allow-Origin *
-
+    header Access-Control-Allow-Methods GET,POST,OPTIONS
     reverse_proxy $EMBY_ADDRESS {
+        transport http {
+            tls_insecure_skip_verify
+        }
+        flush_interval -1
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
         header_up Host {upstream_hostport}
     }
 }"
+        else
+            CONFIG_BLOCK="$DOMAIN {
+    encode gzip
+    header Access-Control-Allow-Origin *
+    header Access-Control-Allow-Methods GET,POST,OPTIONS
+    reverse_proxy $EMBY_ADDRESS {
+        flush_interval -1
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {upstream_hostport}
+    }
+}"
+        fi
 
-    log "正在写入配置..."
-
-    if [[ "$MODE" == "new" ]]; then
-        echo "$CONFIG_BLOCK" > /etc/caddy/Caddyfile
-    else
-        # 确保追加前有个空行，美观
-        echo "" >> /etc/caddy/Caddyfile
-        echo "$CONFIG_BLOCK" >> /etc/caddy/Caddyfile
-    fi
+        log "正在写入配置..."
+        if [[ "$MODE" == "new" ]]; then
+            echo "$CONFIG_BLOCK" > /etc/caddy/Caddyfile
+            MODE="append" # 后续循环追加
+        else
+            echo "" >> /etc/caddy/Caddyfile
+            echo "$CONFIG_BLOCK" >> /etc/caddy/Caddyfile
+        fi
+        echo -e "${GREEN}站点 $DOMAIN 添加完成${PLAIN}\n"
+    done
 
     restart_caddy
 }
 
-# 6. 删除指定配置 (新功能)
+# 6. 删除指定配置
 delete_config() {
     echo -e "------------------------------------------------"
     echo -e "${SKYBLUE}删除指定站点配置${PLAIN}"
     echo -e "------------------------------------------------"
 
-    if [ ! -f /etc/caddy/Caddyfile ]; then
-        error "未找到配置文件！"
-        return
-    fi
+    [[ ! -f /etc/caddy/Caddyfile ]] && { error "未找到配置文件"; return; }
 
-    # 列出当前配置的域名
-    echo -e "当前已配置的域名："
-    # 提取以 { 结尾的行首域名
     grep -E "^[a-zA-Z0-9.-]+ \{" /etc/caddy/Caddyfile | awk '{print $1}' > /tmp/caddy_domains.txt
-    
-    if [ ! -s /tmp/caddy_domains.txt ]; then
-        warn "配置文件中未找到有效域名块。"
-        return
-    fi
+    [[ ! -s /tmp/caddy_domains.txt ]] && { warn "未找到有效域名块"; return; }
 
     i=1
     while read line; do
@@ -180,24 +183,17 @@ delete_config() {
         ((i++))
     done < /tmp/caddy_domains.txt
 
-    echo -e "------------------------------------------------"
-    read -p "请输入要删除的域名 (完整复制上面的域名): " DEL_DOMAIN < /dev/tty
+    read -p "请输入要删除的域名 (完整复制): " DEL_DOMAIN < /dev/tty
+    [[ -z "$DEL_DOMAIN" ]] && return
 
-    if [[ -z "$DEL_DOMAIN" ]]; then return; fi
-
-    # 再次确认
     if grep -q "^$DEL_DOMAIN {" /etc/caddy/Caddyfile; then
-        # 备份
         cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak.del
-        # 删除操作
         sed -i "/^$DEL_DOMAIN {/,/^}/d" /etc/caddy/Caddyfile
-        # 清理空行
         sed -i '/^\s*$/d' /etc/caddy/Caddyfile
-        
         log "域名 $DEL_DOMAIN 配置已删除。"
         restart_caddy
     else
-        error "未找到域名 $DEL_DOMAIN 的配置！请检查拼写。"
+        error "未找到域名 $DEL_DOMAIN 的配置！"
     fi
 }
 
@@ -223,13 +219,13 @@ show_menu() {
     echo -e "#################################################"
     echo -e " ${GREEN}1.${PLAIN} 安装环境 & Caddy"
     echo -e " ${GREEN}2.${PLAIN} 添加/覆盖 反代配置 (支持多站)"
-    echo -e " ${GREEN}3.${PLAIN} 删除指定站点配置 ${YELLOW}(NEW!)${PLAIN}"
+    echo -e " ${GREEN}3.${PLAIN} 删除指定站点配置"
     echo -e " ${GREEN}4.${PLAIN} 查看 Caddy 配置文件"
     echo -e "-------------------------------------------------"
     echo -e " ${GREEN}5.${PLAIN} 停止 Caddy"
     echo -e " ${GREEN}6.${PLAIN} 重启 Caddy"
     echo -e " ${GREEN}7.${PLAIN} 查询 443/80 端口占用"
-    echo -e " ${RED}8.${PLAIN} 暴力处理端口占用 (修复启动失败)"
+    echo -e " ${RED}8.${PLAIN} 暴力处理端口占用"
     echo -e " ${RED}9.${PLAIN} 卸载 Caddy"
     echo -e "-------------------------------------------------"
     echo -e " ${GREEN}0.${PLAIN} 退出脚本"
