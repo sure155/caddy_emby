@@ -121,17 +121,18 @@ configure_caddy() {
             fi
         fi
 
+        # ===== 优化 CONFIG_BLOCK 开始 =====
         if [[ "$EMBY_ADDRESS" =~ ^https:// ]]; then
             CONFIG_BLOCK="$DOMAIN {
-    header Access-Control-Allow-Origin *
-    header Access-Control-Allow-Methods GET,POST,OPTIONS
+    header {
+        Access-Control-Allow-Origin *
+        Access-Control-Allow-Methods GET, POST, OPTIONS
+    }
     reverse_proxy $EMBY_ADDRESS {
         transport http {
+            tls
             tls_insecure_skip_verify
-            read_buffer 32kb
-            write_buffer 32kb
         }
-        flush_interval -1
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
@@ -140,10 +141,11 @@ configure_caddy() {
 }"
         else
             CONFIG_BLOCK="$DOMAIN {
-    header Access-Control-Allow-Origin *
-    header Access-Control-Allow-Methods GET,POST,OPTIONS
+    header {
+        Access-Control-Allow-Origin *
+        Access-Control-Allow-Methods GET, POST, OPTIONS
+    }
     reverse_proxy $EMBY_ADDRESS {
-        flush_interval -1
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
@@ -151,6 +153,7 @@ configure_caddy() {
     }
 }"
         fi
+        # ===== 优化 CONFIG_BLOCK 结束 =====
 
         log "正在写入配置..."
         if [[ "$MODE" == "new" ]]; then
