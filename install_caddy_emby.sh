@@ -126,10 +126,7 @@ configure_caddy() {
     # 生成配置块
     CONFIG_BLOCK="$DOMAIN {
     encode gzip
-    header {
-        Access-Control-Allow-Origin *
-        Strict-Transport-Security \"max-age=31536000;\"
-    }
+    header Access-Control-Allow-Origin *
     reverse_proxy $EMBY_ADDRESS {
         flush_interval -1
         header_up X-Real-IP {remote_host}
