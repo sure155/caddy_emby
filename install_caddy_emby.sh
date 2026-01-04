@@ -126,9 +126,10 @@ configure_caddy() {
     # 生成配置块
     CONFIG_BLOCK="$DOMAIN {
     encode gzip
+    header Access-Control-Allow-Origin *
     reverse_proxy $EMBY_ADDRESS {
         flush_interval -1
-        header_up Host {upstream_host}
+        header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
