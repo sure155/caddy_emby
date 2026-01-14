@@ -127,11 +127,17 @@ configure_caddy() {
     CONFIG_BLOCK="$DOMAIN {
     encode gzip
     header Access-Control-Allow-Origin *
+
     reverse_proxy $EMBY_ADDRESS {
         flush_interval -1
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
+
+        # ===== 隐私保护：不向上游泄露真实用户 =====
+        header_up -X-Forwarded-For
+        header_up -X-Real-IP
+        header_up -X-Forwarded-Proto
+        header_up -X-Forwarded-Host
+
+        # 让目标服务器认为是 VPS 自己在访问
         header_up Host {upstream_hostport}
     }
 }"
