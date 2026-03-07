@@ -262,7 +262,7 @@ cat <<EOF
 }
 
 # 统一 Host，减少上游基于 Host 的识别差异
-header_up Host ${hp}
+header_up Host ${host}
 EOF
 
 if [[ "$privacy_mode" == "strict" ]]; then
@@ -272,8 +272,8 @@ header_up -X-Forwarded-For
 header_up -X-Real-IP
 header_up -Forwarded
 header_up -CF-Connecting-IP
-header_up -X-Forwarded-Proto
-header_up -X-Forwarded-Host
+header_up X-Forwarded-Proto {scheme}
+header_up X-Forwarded-Host {host}
 EOF
 else
 cat <<'EOF'
@@ -334,7 +334,7 @@ local privacy_mode="strict"
 
 local insecure_skip="no"
 if [[ "$upstream" =~ ^https:// ]]; then
-read -r -p "上游 HTTPS 证书不可控，是否跳过校验? [y/N]: " sk < /dev/tty
+read -r -p "上游 HTTPS 证书不可控，是否跳过校验? [y/N，风险较高]: " sk < /dev/tty
 [[ "${sk:-N}" =~ ^[Yy]$ ]] && insecure_skip="yes"
 fi
 
@@ -403,7 +403,8 @@ fi
 
 backup_caddyfile
 local tmp
-tmp="$(mktemp)"remove_managed_block "$domain" "$CADDYFILE" "$tmp"
+tmp="$(mktemp)"
+remove_managed_block "$domain" "$CADDYFILE" "$tmp"
 if validate_caddyfile "$tmp"; then
 cp -af "$tmp" "$CADDYFILE"
 chown root:root "$CADDYFILE"
@@ -412,7 +413,8 @@ rm -f "$tmp"
 reload_caddy
 log "域名 ${domain} 已删除并生效。"
 else
-rm -f "$tmp"err "删除后配置校验失败，未应用。"
+rm -f "$tmp"
+err "删除后配置校验失败，未应用。"
 return 1
 fi
 }
