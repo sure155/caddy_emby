@@ -3,6 +3,8 @@ set -euo pipefail
 
 # ============================================================
 # Caddy Reverse Proxy for Public Emby (V6 Final Stable)
+# Maintainer: sure155
+# Project: https://github.com/sure155/caddy_emby
 # 场景：上游 Emby 不可控（公费/共享）
 # 目标：隐私优先、兼容可切换、可维护
 # ============================================================
