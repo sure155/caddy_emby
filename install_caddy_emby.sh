@@ -274,8 +274,6 @@ header_up -X-Forwarded-For
 header_up -X-Real-IP
 header_up -Forwarded
 header_up -CF-Connecting-IP
-header_up X-Forwarded-Proto {scheme}
-header_up X-Forwarded-Host {host}
 EOF
 else
 cat <<'EOF'
