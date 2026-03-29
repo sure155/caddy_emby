@@ -239,6 +239,17 @@ cat <<EOF
 # BEGIN MANAGED: ${domain}
 ${domain} {
 encode zstd gzip
+# 修复：使用标准通配符取代正则，避免冲突
+@emby_cache path /Items/*/Images/* /Users/*/Images/* *.js *.css *.woff2 *.webp *.png *.jpg
+header @emby_cache Cache-Control "public, max-age=2592000"
+    
+header {
+    -Server
+    -X-Powered-By
+    -X-Emby-Version
+    +Server "Microsoft-IIS/10.0"
+    Referrer-Policy "no-referrer"	
+}
 
 reverse_proxy ${upstream} {
 flush_interval -1
