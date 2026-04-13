@@ -256,7 +256,7 @@ flush_interval -1
 
 transport http {
 dial_timeout 10s
-response_header_timeout 30s
+response_header_timeout 90s
 keepalive 30s
 EOF
 
