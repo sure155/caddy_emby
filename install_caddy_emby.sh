@@ -238,86 +238,107 @@ host="$(extract_host_only "$hp")"
 cat <<EOF
 # BEGIN MANAGED: ${domain}
 ${domain} {
-encode zstd gzip
-# 修复：使用标准通配符取代正则，避免冲突
-@emby_cache path /Items/*/Images/* /Users/*/Images/* *.js *.css *.woff2 *.webp *.png *.jpg
-header @emby_cache Cache-Control "public, max-age=2592000"
-    
-header {
-    -Server
-    -X-Powered-By
-    -X-Emby-Version
-    +Server "Microsoft-IIS/10.0"
-    Referrer-Policy "no-referrer"	
-}
+	# Emby/大视频不要全局压缩
+	# encode zstd gzip
 
-reverse_proxy ${upstream} {
-flush_interval -1
+	@static_cache path /Items/*/Images/* /Users/*/Images/* /web/*.js /web/*.css /web/*.woff2 *.png *.jpg *.jpeg *.webp *.ico *.svg *.woff2
+	header @static_cache Cache-Control "public, max-age=2592000, immutable"
 
-transport http {
-dial_timeout 10s
-response_header_timeout 90s
-keepalive 30s
+	@media_stream path /Videos/* /emby/Videos/* /Audio/* /emby/Audio/* /Items/*/Download* /Sessions/Playing* /Playback/*
+	header @media_stream Cache-Control "no-store"
+	header @media_stream X-Accel-Buffering "no"
+
+	header {
+		-Server
+		-X-Powered-By
+		-X-Emby-Version
+		Referrer-Policy "no-referrer"
+		X-Content-Type-Options "nosniff"
+	}
+
+	reverse_proxy ${upstream} {
+		# 通用最优：不写 flush_interval，交给 Caddy 默认处理
+
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 120s
+			read_timeout 0
+			write_timeout 0
+			keepalive 60s
+			keepalive_idle_conns 256
+			keepalive_idle_conns_per_host 64
+			read_buffer 32768
+			write_buffer 32768
 EOF
 
 if [[ "$upstream" =~ ^https:// ]]; then
 cat <<EOF
-tls_server_name ${host}
+			tls_server_name ${host}
 EOF
-if [[ "$insecure_skip" == "yes" ]]; then
+	if [[ "$insecure_skip" == "yes" ]]; then
 cat <<EOF
-tls_insecure_skip_verify
+			tls_insecure_skip_verify
 EOF
-fi
+	fi
 fi
 
 cat <<EOF
-}
+		}
 
-# 统一 Host，减少上游基于 Host 的识别差异
-header_up Host ${host}
+		header_up Host ${host}
+
+		# 保留拖动/分段播放必需头
+		header_up Range {http.request.header.Range}
+		header_up If-Range {http.request.header.If-Range}
 EOF
 
 if [[ "$privacy_mode" == "strict" ]]; then
 cat <<'EOF'
-# 严格隐私：不暴露真实来源
-header_up -X-Forwarded-For
-header_up -X-Real-IP
-header_up -Forwarded
-header_up -CF-Connecting-IP
+
+		# 严格隐私：不暴露真实来源
+		header_up -X-Forwarded-For
+		header_up -X-Real-IP
+		header_up -Forwarded
+		header_up -CF-Connecting-IP
+		header_up -True-Client-IP
+		header_up -X-Client-IP
 EOF
 else
 cat <<'EOF'
-# 兼容模式：隐藏真实 IP，但保留协议/Host 语义
-header_up -X-Forwarded-For
-header_up -X-Real-IP
-header_up X-Forwarded-Proto {scheme}
-header_up X-Forwarded-Host {host}
+
+		# 兼容模式：隐藏真实 IP，但保留协议/Host 语义
+		header_up -X-Forwarded-For
+		header_up -X-Real-IP
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {host}
 EOF
 fi
 
 cat <<EOF
-}
 
+		header_down -Server
+		header_down -X-Powered-By
+		header_down -X-Emby-Version
+	}
 EOF
 
 if [[ "$log_json" == "yes" ]]; then
 cat <<EOF
-log {
-output file ${LOG_DIR}/${domain}.access.log {
-roll_size 50MiB
-roll_keep 10
-roll_keep_for 720h
-}
-format json
-}
+
+	log {
+		output file ${LOG_DIR}/${domain}.access.log {
+			roll_size 50MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format json
+	}
 EOF
 fi
 
 cat <<EOF
 }
 # END MANAGED: ${domain}
-
 EOF
 }
 
