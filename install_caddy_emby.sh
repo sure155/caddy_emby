@@ -258,7 +258,7 @@ ${domain} {
 
 	reverse_proxy ${upstream} {
 		# 通用最优：不写 flush_interval，交给 Caddy 默认处理
-        flush_interval 1s
+        flush_interval -1
 		transport http {
 			dial_timeout 10s
 			response_header_timeout 120s
