@@ -244,7 +244,7 @@ ${domain} {
 	@static_cache path /Items/*/Images/* /Users/*/Images/* /web/*.js /web/*.css /web/*.woff2 *.png *.jpg *.jpeg *.webp *.ico *.svg *.woff2
 	header @static_cache Cache-Control "public, max-age=2592000, immutable"
 
-	@media_stream path /Videos/* /emby/Videos/* /Audio/* /emby/Audio/* /Items/*/Download* /Sessions/Playing* /Playback/*
+	@media_stream path /Videos/* /emby/Videos/* /Audio/* /emby/Audio/* /Items/*/Download* /Sessions/Playing* /Playback/*/Items/* /Sessions/* /Sync/* /System/* /Users/*
 	header @media_stream Cache-Control "no-store"
 	header @media_stream X-Accel-Buffering "no"
 
@@ -264,6 +264,7 @@ ${domain} {
 			response_header_timeout 120s
 			read_timeout 0
 			write_timeout 0
+			idle_timeout 30m
 			keepalive 60s
 			keepalive_idle_conns 256
 			keepalive_idle_conns_per_host 64
