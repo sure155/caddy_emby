@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ============================================================
-# Caddy Reverse Proxy for Public Emby (V6 Final Stable)
-# Maintainer: sure155
+# Caddy Reverse Proxy for Public Emby (V6.1 Final Stable+)
+# Maintainer: sure155 (optimized)
 # Project: https://github.com/sure155/caddy_emby
 # 场景：上游 Emby 不可控（公费/共享）
 # 目标：隐私优先、兼容可切换、可维护
@@ -18,6 +18,7 @@ PLAIN='\033[0m'
 CADDYFILE="/etc/caddy/Caddyfile"
 BACKUP_DIR="/etc/caddy/backup"
 LOG_DIR="/var/log/caddy"
+BACKUP_KEEP=20   # 备份保留份数，超出自动清理旧备份
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 echo -e "${RED}[Error]${PLAIN} 必须使用 root 运行"
@@ -27,6 +28,31 @@ fi
 log() { echo -e "${GREEN}[Info]${PLAIN} $*"; }
 warn() { echo -e "${YELLOW}[Warn]${PLAIN} $*"; }
 err() { echo -e "${RED}[Error]${PLAIN} $*"; }
+
+# ---- 出错追踪：出问题时告诉用户是哪一行/哪个命令 ----
+on_err() {
+local exit_code=$?
+local line_no=${BASH_LINENO[0]:-0}
+err "脚本在第 ${line_no} 行执行失败（exit=${exit_code}）：${BASH_COMMAND}"
+}
+trap on_err ERR
+
+# ---- 临时文件跟踪，脚本任何原因退出都会清理，避免 /tmp 残留 ----
+TMP_FILES=()
+cleanup_tmp() {
+local f
+for f in "${TMP_FILES[@]:-}"; do
+[[ -n "${f:-}" && -f "$f" ]] && rm -f "$f"
+done
+}
+trap cleanup_tmp EXIT
+
+mktemp_track() {
+local f
+f="$(mktemp)"
+TMP_FILES+=("$f")
+echo "$f"
+}
 
 pause() {
 echo
@@ -65,10 +91,25 @@ EOF
 fi
 }
 
+prune_backups() {
+# 只保留最近 BACKUP_KEEP 份备份，避免无限增长
+[[ -d "$BACKUP_DIR" ]] || return 0
+local count
+count="$(find "$BACKUP_DIR" -maxdepth 1 -name 'Caddyfile.*.bak' | wc -l)"
+if (( count > BACKUP_KEEP )); then
+find "$BACKUP_DIR" -maxdepth 1 -name 'Caddyfile.*.bak' -printf '%T@ %p\n' 2>/dev/null \
+| sort -n \
+| head -n "$(( count - BACKUP_KEEP ))" \
+| awk '{ $1=""; sub(/^ /,""); print }' \
+| xargs -r rm -f
+fi
+}
+
 backup_caddyfile() {
 ensure_dirs
 if [[ -f "$CADDYFILE" ]]; then
 cp -a "$CADDYFILE" "$BACKUP_DIR/Caddyfile.$(date +%F_%H%M%S).bak"
+prune_backups
 fi
 }
 
@@ -111,8 +152,9 @@ log "安装 Caddy..."
 case "$pm" in
 apt)
 apt install -y debian-keyring debian-archive-keyring apt-transport-https
+mkdir -p /usr/share/keyrings
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-| gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+| gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 > /etc/apt/sources.list.d/caddy-stable.list
 apt update -y
@@ -141,13 +183,20 @@ log "Caddy 安装完成。"
 
 check_ports() {
 echo -e "${CYAN}=== 80/443 端口占用 ===${PLAIN}"
+local found=0
 if has_cmd ss; then
-ss -tulpn | grep -E ':(80|443)\b' || true
+if ss -tulpn 2>/dev/null | grep -E ':(80|443)\b'; then
+found=1
+fi
 elif has_cmd netstat; then
-netstat -tunlp | grep -E ':(80|443)\b' || true
+if netstat -tunlp 2>/dev/null | grep -E ':(80|443)\b'; then
+found=1
+fi
 else
 warn "ss/netstat 都不可用"
+return 0
 fi
+[[ "$found" -eq 0 ]] && log "80/443 端口当前无占用。"
 }
 
 kill_ports_aggressive() {
@@ -192,11 +241,30 @@ fi
 echo "${hp%%:*}"
 }
 
+validate_domain() {
+local d="$1"
+# 允许多级域名/子域名；不允许空格、协议前缀、通配符等明显错误输入
+if [[ "$d" =~ ^https?:// ]]; then
+err "域名不应包含协议前缀 (http:// 或 https://)"
+return 1
+fi
+if [[ "$d" =~ [[:space:]] ]]; then
+err "域名不能包含空格"
+return 1
+fi
+if ! [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$ ]]; then
+err "域名格式看起来不正确：${d}"
+return 1
+fi
+return 0
+}
+
 validate_caddyfile() {
 local file="$1"
 caddy fmt --overwrite "$file" >/dev/null 2>&1 || true
 caddy validate --config "$file" --adapter caddyfile
 }
+
 reload_caddy() {
 if systemctl is-active --quiet caddy; then
 systemctl reload caddy || systemctl restart caddy
@@ -349,9 +417,12 @@ echo "--------------------------------------------"
 echo -e "${CYAN}添加/更新 Emby 反代站点${PLAIN}"
 echo "--------------------------------------------"
 
+local domain
 read -r -p "请输入域名 (如 emby.example.com): " domain < /dev/tty
-[[ -z "${domain:-}" ]] && { err "域名不能为空"; return; }
+[[ -z "${domain:-}" ]] && { err "域名不能为空"; return 1; }
+validate_domain "$domain" || return 1
 
+local upstream
 read -r -p "请输入上游地址 (如 https://upstream.example.com:443 或 127.0.0.1:8096): " upstream < /dev/tty
 [[ -z "${upstream:-}" ]] && upstream="127.0.0.1:8096"
 upstream="$(normalize_upstream "$upstream")"
@@ -360,28 +431,31 @@ echo
 echo "隐私模式："
 echo " 1) strict（默认，尽量不泄露来源）"
 echo " 2) compat（兼容优先，保留 scheme/host）"
+local m
 read -r -p "请选择 [1-2] (默认1): " m < /dev/tty
 local privacy_mode="strict"
 [[ "${m:-1}" == "2" ]] && privacy_mode="compat"
 
 local insecure_skip="no"
 if [[ "$upstream" =~ ^https:// ]]; then
+local sk
 read -r -p "上游 HTTPS 证书不可控，是否跳过校验? [y/N，风险较高]: " sk < /dev/tty
 [[ "${sk:-N}" =~ ^[Yy]$ ]] && insecure_skip="yes"
 fi
 
+local l
 read -r -p "是否开启该站点访问日志(JSON)? [Y/n]: " l < /dev/tty
 local log_json="yes"
 [[ "${l:-Y}" =~ ^[Nn]$ ]] && log_json="no"
 
 backup_caddyfile
 local tmp tmp2
-tmp="$(mktemp)"
+tmp="$(mktemp_track)"
 cp -a "$CADDYFILE" "$tmp"
 
-tmp2="$(mktemp)"
+tmp2="$(mktemp_track)"
 remove_managed_block "$domain" "$tmp" "$tmp2"
-mv -f "$tmp2" "$tmp"
+cp -f "$tmp2" "$tmp"
 
 site_block "$domain" "$upstream" "$privacy_mode" "$insecure_skip" "$log_json" >> "$tmp"
 
@@ -389,11 +463,9 @@ if validate_caddyfile "$tmp"; then
 cp -af "$tmp" "$CADDYFILE"
 chown root:root "$CADDYFILE"
 chmod 644 "$CADDYFILE"
-rm -f "$tmp"
 reload_caddy
 log "站点 ${domain} 已写入并生效。"
 else
-rm -f "$tmp"
 err "配置校验失败，未应用。"
 return 1
 fi
@@ -406,7 +478,7 @@ return
 fi
 
 local list
-list="$(grep -E '^# BEGIN MANAGED: ' "$CADDYFILE" | sed 's/^# BEGIN MANAGED: //')"
+list="$(grep -E '^# BEGIN MANAGED: ' "$CADDYFILE" | sed 's/^# BEGIN MANAGED: //' || true)"
 
 if [[ -z "${list:-}" ]]; then
 warn "未找到受管站点"
@@ -425,27 +497,26 @@ fi
 
 list_managed_sites
 echo
+local domain
 read -r -p "请输入要删除的域名（精确）: " domain < /dev/tty
 [[ -z "${domain:-}" ]] && return
 
 if ! grep -Fq "# BEGIN MANAGED: ${domain}" "$CADDYFILE"; then
 err "未找到受管域名：${domain}"
-return
+return 1
 fi
 
 backup_caddyfile
 local tmp
-tmp="$(mktemp)"
+tmp="$(mktemp_track)"
 remove_managed_block "$domain" "$CADDYFILE" "$tmp"
 if validate_caddyfile "$tmp"; then
 cp -af "$tmp" "$CADDYFILE"
 chown root:root "$CADDYFILE"
 chmod 644 "$CADDYFILE"
-rm -f "$tmp"
 reload_caddy
 log "域名 ${domain} 已删除并生效。"
 else
-rm -f "$tmp"
 err "删除后配置校验失败，未应用。"
 return 1
 fi
@@ -460,6 +531,7 @@ fi
 }
 
 show_logs() {
+local domain
 read -r -p "输入域名查看访问日志（留空看系统日志）: " domain < /dev/tty
 if [[ -n "${domain:-}" && -f "${LOG_DIR}/${domain}.access.log" ]]; then
 tail -n 100 "${LOG_DIR}/${domain}.access.log"
@@ -469,6 +541,7 @@ fi
 }
 
 uninstall_caddy() {
+local x
 read -r -p "确认卸载 Caddy? [y/N]: " x < /dev/tty
 [[ "${x:-N}" =~ ^[Yy]$ ]] || return
 
@@ -484,6 +557,7 @@ yum) yum remove -y caddy ;;
 esac
 
 warn "是否删除 /etc/caddy ?（配置将丢失）"
+local y
 read -r -p "[y/N]: " y < /dev/tty
 if [[ "${y:-N}" =~ ^[Yy]$ ]]; then
 rm -rf /etc/caddy
@@ -517,7 +591,7 @@ fi
 menu() {
 clear
 echo "############################################################"
-echo "# Caddy + Emby 多站点反代管理（V6 Final Stable） #"
+echo "# Caddy + Emby 多站点反代管理（V6.1 Final Stable+） #"
 echo "############################################################"
 echo " 1) 安装基础环境 & Caddy"
 echo " 2) 添加/更新 反代站点（受管）"
@@ -533,6 +607,7 @@ echo "10) 强制清理 80/443 占用（危险）"
 echo "11) 卸载 Caddy"
 echo " 0) 退出"
 echo "------------------------------------------------------------"
+local n
 read -r -p "请选择 [0-11]: " n < /dev/tty
 
 case "$n" in
